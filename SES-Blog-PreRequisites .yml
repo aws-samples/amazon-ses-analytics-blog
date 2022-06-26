@@ -1,0 +1,154 @@
+AWSTemplateFormatVersion:  2010-09-09
+
+Description: 'This template creates an S3 Bucket and Kinesis Firehose Delivery Stream that uses SES Config Set to ingest events on S3'
+
+Resources:    
+  s3BucketSESEvents:
+    Type: AWS::S3::Bucket
+    Properties:
+      LoggingConfiguration: 
+        DestinationBucketName:
+          !Join
+            - ''
+            - - 'aws-s3-ses-analytics-'
+              - !Ref AWS::AccountId
+        LogFilePrefix: access-logs      
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      BucketName: 
+        !Join
+          - ''
+          - - 'aws-s3-ses-analytics-'
+            - !Ref AWS::AccountId
+
+  S3SESEventsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref s3BucketSESEvents
+      PolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - 
+            Action:
+              - s3:GetObject
+              - s3:ListBucket
+              - s3:PutObject
+            Effect: Allow
+            Resource:
+              - !Sub arn:aws:s3:::${s3BucketSESEvents}
+              - !Sub arn:aws:s3:::${s3BucketSESEvents}/*
+            Principal:
+              AWS: !GetAtt ConfigSetPermissionPutFirehose.Arn
+  
+  firehoseSESRole:
+    Type: AWS::IAM::Role
+    Properties:
+        AssumeRolePolicyDocument:
+            Version: 2012-10-17
+            Statement:
+            -
+                Effect: Allow
+                Principal:
+                    Service: firehose.amazonaws.com
+                Action: 'sts:AssumeRole'
+                Condition:
+                    StringEquals:
+                     'sts:ExternalId': !Ref 'AWS::AccountId'
+        Policies:
+          -
+            PolicyName: !Join
+                - ''
+                - - 'aws-ses-analytics-kinesis-policy-'
+                  - !Ref AWS::StackName
+            PolicyDocument:
+                Version: 2012-10-17
+                Statement:
+                - 
+                    Effect: Allow
+                    Action:
+                        - 's3:AbortMultipartUpload'
+                        - 's3:GetBucketLocation'
+                        - 's3:GetObject'
+                        - 's3:ListBucket'
+                        - 's3:ListBucketMultipartUploads'
+                        - 's3:PutObject'
+                        - 'lambda:InvokeFunction' 
+                        - 'lambda:GetFunctionConfiguration'  
+                    Resource:
+                    - !Join 
+                        - ''
+                        - - 'arn:aws:s3:::'
+                          - !Ref s3BucketSESEvents
+                    - !Join 
+                        - ''
+                        - - 'arn:aws:s3:::'
+                          - !Ref s3BucketSESEvents
+                          - '*'
+  firehoseDeliveryStream: 
+    Type: AWS::KinesisFirehose::DeliveryStream
+    Properties:
+      DeliveryStreamEncryptionConfigurationInput:
+        KeyType: AWS_OWNED_CMK 
+      DeliveryStreamName: 
+        !Join
+          - ''
+          - - 'aws-ses-analytics-kinesis-'
+            - !Ref AWS::AccountId
+      ExtendedS3DestinationConfiguration:
+        BucketARN: !Join 
+          - ''
+          - - 'arn:aws:s3:::'
+            - !Ref s3BucketSESEvents
+        CompressionFormat: UNCOMPRESSED
+        Prefix: raw/
+        RoleARN: !GetAtt firehoseSESRole.Arn
+
+  ConfigSetPermissionPutFirehose:
+    Type: AWS::IAM::Role
+    Properties: 
+        AssumeRolePolicyDocument: 
+          Version: "2012-10-17"
+          Statement: 
+          - 
+            Effect: "Allow"
+            Principal: 
+                Service: ses.amazonaws.com
+            Action: sts:AssumeRole
+        Path: '/service-role/'
+        Policies: 
+          - 
+            PolicyName: !Join
+                - ''
+                - - 'AWS-ses-config-set-destination-'
+                  - !Ref AWS::StackName
+            PolicyDocument:
+                Version: '2012-10-17'
+                Statement:
+                    - 
+                      Effect: Allow
+                      Action:
+                          - firehose:PutRecord
+                          - firehose:PutRecordBatch
+                      Resource: 
+                        - !Join 
+                          - ''
+                          - - 'arn:aws:firehose:'
+                            - !Ref AWS::Region
+                            - ':'
+                            - !Ref AWS::AccountId
+                            - ':deliverystream/'
+                            - !Join
+                              - ''
+                              - - 'aws-ses-analytics-kinesis-'
+                                - !Ref AWS::AccountId
+
+Outputs:
+  KinesisFireHoseDeliveryStream:
+    Description: 'Kinesis Delivery Stream'
+    Value: !GetAtt firehoseDeliveryStream.Arn
+  ConfigSetPermissionPutFirehose:
+    Description: 'IAM Service Role for Configuration Set Destination S3 Put'
+    Value: !GetAtt ConfigSetPermissionPutFirehose.Arn
+    
